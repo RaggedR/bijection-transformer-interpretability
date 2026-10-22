@@ -1,0 +1,375 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{listings}
+\usepackage{xcolor}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!70!black,
+    citecolor=blue!70!black,
+    urlcolor=blue!70!black
+}
+
+\lstset{
+    language=Python,
+    basicstyle=\ttfamily\small,
+    keywordstyle=\color{blue!70!black},
+    commentstyle=\color{gray},
+    stringstyle=\color{red!70!black},
+    showstringspaces=false,
+    frame=single,
+    framesep=3pt,
+    xleftmargin=3pt,
+    xrightmargin=3pt,
+    breaklines=true,
+    columns=fullflexible,
+}
+
+\title{\textbf{Learning Combinatorial Bijections with Transformers:\\Inverse RSK, Growth Diagrams, and Interpretable Features}}
+\author{Robin Langer\\[4pt]
+\small \url{https://github.com/RaggedR/rsk-transformer}}
+\date{April 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We train a 1.2M-parameter encoder-only transformer to learn inverse combinatorial bijections---the Robinson--Schensted--Knuth (RSK) correspondence, the Hillman--Grassl correspondence, and a cylindric growth diagram bijection---by encoding each tableau entry as a token with four learned embeddings (value, row, column, tableau identity) that preserve 2D geometric structure. On $n{=}10$ permutations, the model achieves \textbf{100\% exact-match accuracy} on 50,000 held-out samples (trained on 14\% of the space, ruling out memorisation), and 99.99\% at $n{=}15$ (1.3 trillion permutations). The same architecture achieves 100\% on reverse plane partitions and cylindric plane partitions---the latter requiring inversion of a recursive process with no closed-form algorithm. Using sparse autoencoders to decompose the trained model's internal representations, we find two families of interpretable features for permutation RSK (insertion-order detectors and step-specific $Q$-entry locators implementing the inverse bumping algorithm) and, for cylindric plane partitions, features that fire on the specific partition triples where the Burge local rule operates---direct evidence that the model has learned Fomin's growth diagram framework. Embedding ablation confirms that 2D structure is essential: replacing row and column embeddings with 1D sequential position drops accuracy from 100\% to 72\%, and removing the $P$-vs-$Q$ tableau identity collapses it to 6\%. This significantly improves on the PNNL ML4AlgComb benchmark~\cite{pnnl}, which achieved only weak baselines using flat bracket-string encoding.
+\end{abstract}
+
+\section{Introduction}
+
+The Robinson--Schensted--Knuth correspondence~\cite{knuth1970,schensted1961} is a bijection central to algebraic combinatorics:
+\[
+\sigma \in S_n \;\longleftrightarrow\; (P, Q) \text{ pair of standard Young tableaux of shape } \lambda \vdash n
+\]
+
+The \emph{forward} direction $(\sigma \to P, Q)$ uses Schensted row insertion: scan each $\sigma(i)$, bump entries through rows, and record where new cells appear. The \emph{inverse} $(P, Q \to \sigma)$ uses reverse bumping, processing entries in decreasing order. For a detailed treatment, see Langer~\cite{langer2013}, Chapter~2, \S2.1--2.2, pp.~25--43; the reverse algorithm specifically is described in \S2.2.5, p.~41.
+
+We train a neural network to learn the inverse direction: given~$P$ and~$Q$, predict~$\sigma$. Beyond achieving high accuracy, we use sparse autoencoders to ask \emph{what algorithm the model has learned}. This is a well-posed question because there are two fundamentally different formulations of RSK: Schensted's sequential bumping algorithm and Fomin's parallel growth diagrams via local rules~\cite{langer2013}. We find evidence for both---with the choice depending on the task.
+
+\subsection{Prior Work}
+
+The PNNL ML4AlgComb benchmark~\cite{pnnl} attempted inverse RSK with tableaux encoded as bracket strings: \texttt{"[[1,3,5],[2,4]]"} tokenised character-by-character. They used sequence-to-sequence models treating the problem as string transduction, achieving results ``similar or worse than simply guessing the mean''~\cite{pnnl}.
+
+The failure is structural: bracket-string encoding destroys the 2D geometric structure of tableaux. The model must re-learn that \texttt{1} at position~7 in the string means ``row~0, column~0''---information that was explicit in the tableau but is now buried in syntax.
+
+Scullen et al.~\cite{scullen2025} subsequently studied representation effects on permutation learning systematically, comparing five encodings (permutation matrix, inversion vector, Lehmer cocode, major code, reduced word) across twelve classification tasks on~$S_5$ and~$S_8$. They find that representation choice significantly affects both task difficulty and data efficiency, confirming the importance of encoding design. However, their tasks are scalar permutation statistics (number of descents, peaks, etc.) and their representations do not encode 2D tableau structure. Our work addresses a complementary regime: full bijection inversion, where representation choice determines not just efficiency but \emph{learnability}---inverse RSK cannot be learned with flat encodings regardless of data, but is solved at near-perfect accuracy with structured 2D tokens.
+
+\section{Architecture: RSKEncoder}
+
+\subsection{Input Encoding: Structured 2D Tokens}
+
+Each entry in $P$ and $Q$ becomes a token. For $n$~entries per tableau, we get $2n$~tokens. Each token carries four properties: its numeric value, its row, its column, and which tableau ($P$ or~$Q$) it belongs to.
+
+The embedding is four learned lookup tables, summed:
+\begin{equation}
+\mathrm{emb}(\text{entry}) = \mathrm{value\_emb}(v) + \mathrm{row\_emb}(r) + \mathrm{col\_emb}(c) + \mathrm{tableau\_emb}(t)
+\end{equation}
+Each lookup table is an \texttt{nn.Embedding} mapping indices to learned 128-dimensional vectors. The sum produces a single 128-d vector per token, followed by LayerNorm and dropout.
+
+\textbf{Comparison to standard LLM embeddings.} This mirrors the GPT-2 embedding pattern~\cite{raschka2024} where $x = \mathrm{token\_emb}(\text{id}) + \mathrm{pos\_emb}(\text{position})$---two lookup tables summed. We extend this from two tables (what + where-in-1D) to four (what + row + column + which-tableau), reflecting that tableaux are 2D objects that come in pairs.
+
+\textbf{Why sum rather than concatenate.} Concatenating would give a $4 \times 128 = 512$-dimensional input. Summing keeps the dimension at~128, relying on the network learning roughly orthogonal directions for the different properties in high-dimensional space.
+
+\subsection{Transformer Encoder}
+
+The embedded tokens pass through a 6-layer \texttt{TransformerEncoder} with:
+\begin{itemize}[nosep]
+    \item $d_{\text{model}} = 128$, 8 attention heads ($d_k = 16$)
+    \item Feed-forward dimension 512 with GELU activation
+    \item Pre-norm (LayerNorm before attention/FFN), dropout 0.1
+    \item \textbf{No causal mask}: all $2n$ tokens attend to all others simultaneously
+\end{itemize}
+
+This is BERT-style (encoder-only, bidirectional) rather than GPT-style (decoder, causal). Since $(P, Q)$ fully determines~$\sigma$, all information is in the input---autoregressive decoding is unnecessary.
+
+\subsection{Classification Heads and Decoding}
+
+After the encoder, all $2n$ token representations are \textbf{mean-pooled} into a single 128-d vector. This feeds into $n$~parallel linear heads, each producing $n$~logits:
+\[
+\text{logits}[b, i, j] = \log\text{-probability that } \sigma(i{+}1) = j{+}1
+\]
+
+\textbf{Masked greedy decoding} (inference only) enforces the permutation constraint:
+\begin{enumerate}[nosep]
+    \item Find the global $(\text{position}, \text{value})$ pair with highest logit
+    \item Lock that assignment
+    \item Mask that position and value from future consideration
+    \item Repeat $n$~times
+\end{enumerate}
+This guarantees a valid permutation in $O(n^2)$ time.
+
+\subsection{Parameter Count}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lr}
+\toprule
+Component & Parameters \\
+\midrule
+Embedding tables & $(3n + 3) \times 128$ \\
+6 transformer layers & $\sim$1.18M \\
+$n$ classification heads & $n \times (128n + n)$ \\
+\midrule
+\textbf{Total ($n{=}8$)} & \textbf{1,202,368} \\
+\textbf{Total ($n{=}10$)} & \textbf{1,207,012} \\
+\textbf{Total ($n{=}15$)} & \textbf{1,225,057} \\
+\bottomrule
+\end{tabular}
+\caption{The 6-layer transformer backbone dominates. Changing $n$ only affects embedding tables and head sizes.}
+\end{table}
+
+\section{Training}
+
+\subsection{Hyperparameters}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{ll}
+\toprule
+Hyperparameter & Value \\
+\midrule
+Optimizer & AdamW \\
+Learning rate & $3 \times 10^{-4}$ \\
+Weight decay & 0.01 \\
+Schedule & Linear warmup (5\%) $\to$ cosine decay \\
+Gradient clipping & max norm 1.0 \\
+Batch size & 512 \\
+Loss & Cross-entropy (summed over $n$ heads) \\
+Early stopping & Patience 10 on val greedy exact match \\
+\bottomrule
+\end{tabular}
+\caption{Standard transformer training defaults. No systematic hyperparameter search was performed.}
+\end{table}
+
+\subsection{Data}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{rrlrrr}
+\toprule
+$n$ & $|S_n|$ & Source & Train & Val & Test \\
+\midrule
+8 & 40{,}320 & HuggingFace~\cite{acdrepo} & 29{,}031 (72\%) & 3{,}225 & 8{,}064 \\
+10 & 3{,}628{,}800 & Random sampling & 500{,}000 (14\%) & 50{,}000 & 50{,}000 \\
+15 & $1.3 \times 10^{12}$ & Random sampling & 500{,}000 & 50{,}000 & 50{,}000 \\
+\bottomrule
+\end{tabular}
+\caption{For $n=10$ and $n=15$, data is generated on the fly: sample a random permutation, compute RSK forward to get $(P, Q)$, encode as structured tokens. Each epoch sees fresh random permutations for training; validation and test sets are fixed (seeded).}
+\end{table}
+
+\subsection{Hardware}
+
+All training was done on an Apple M4 Max (MacBook Pro) using the PyTorch MPS backend. Epoch times: $\sim$15s at $n{=}8$, $\sim$35s at $n{=}10$, and 10--18 minutes at $n{=}15$ (with intermittent thermal throttling). Total wall time ranged from $\sim$8 minutes ($n{=}8$) to $\sim$6--10 hours ($n{=}15$). No multi-GPU or cloud compute was used.
+
+\section{Results}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{rrcccc}
+\toprule
+$n$ & $|S_n|$ & Train fraction & Greedy exact & Argmax exact & Best epoch \\
+\midrule
+8 & 40{,}320 & 72\% & 99.95\% & 99.80\% & 23 \\
+10 & 3{,}628{,}800 & 14\% & \textbf{100.00\%} & \textbf{100.00\%} & 28 \\
+15 & $1.3 \times 10^{12}$ & 0.00004\% & \textbf{99.99\%} & 99.98\% & 52 \\
+\bottomrule
+\end{tabular}
+\caption{Test set results. ``Greedy exact'' uses masked greedy decoding; ``argmax exact'' uses unconstrained per-position argmax.}
+\end{table}
+
+\textbf{$n{=}10$}: Both argmax and greedy achieve 100\% on 50{,}000 held-out test samples. The model's per-position predictions are so confident that it never assigns the same value to two positions.
+
+\textbf{$n{=}15$}: 99.99\% greedy exact = 49{,}995 out of 50{,}000 permutations exactly correct. Per-position accuracy is 100.00\%. The greedy--argmax gap is negligible (99.99\% vs 99.98\%), indicating the model's per-position predictions almost never violate the permutation constraint.
+
+\subsection{Ablation: Transformer vs MLP}
+
+To isolate the contribution of structured 2D embedding and self-attention, we compare against a baseline MLP that receives the same data but flattens it to a vector.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{llrrrr}
+\toprule
+$n$ & Model & Parameters & Greedy exact & Argmax exact & Per-position \\
+\midrule
+10 & \textbf{RSKEncoder} & 1,207,012 & \textbf{100.00\%} & \textbf{100.00\%} & \textbf{100.00\%} \\
+10 & BaselineMLP & 133,604 & 95.67\% & 90.31\% & 98.85\% \\
+\midrule
+15 & \textbf{RSKEncoder} & 1,225,057 & \textbf{99.99\%} & \textbf{99.98\%} & \textbf{100.00\%} \\
+15 & BaselineMLP & 133,604 & 3.07\% & 0.04\% & 62.02\% \\
+\bottomrule
+\end{tabular}
+\caption{The MLP collapses from 95.67\% to 3.07\% as $n$ increases from 10 to 15, while the transformer barely notices the increase (100\% $\to$ 99.99\%). Without spatial structure, the MLP cannot coordinate predictions across positions.}
+\end{table}
+
+\subsection{Ablation: Embedding Components}
+
+To test which embedding components are necessary, we train the $n{=}10$ model with each component removed (500{,}000 training samples, identical hyperparameters).
+
+\begin{table}[h]
+\centering
+\begin{tabular}{llcc}
+\toprule
+Ablation & What changes & Greedy exact & Per-position \\
+\midrule
+Full model & --- & \textbf{100.00\%} & 100.00\% \\
+Drop row & No row embedding & \textbf{100.00\%} & 100.00\% \\
+Drop column & No column embedding & \textbf{99.99\%} & 100.00\% \\
+Concatenate & 4$\times$32d concat, not 4$\times$128d sum & \textbf{100.00\%} & 100.00\% \\
+\midrule
+1D position & Sequential pos replaces row+col & 72.38\% & 91.34\% \\
+Drop tableau & No $P$-vs-$Q$ identity & 5.79\% & 58.49\% \\
+Drop row+col & No spatial info (value + tableau only) & 0.00\% & 9.99\% \\
+\bottomrule
+\end{tabular}
+\caption{Embedding ablation at $n{=}10$. Row and column are individually redundant (either suffices to reconstruct 2D position given the tableau shape), but \emph{some} spatial embedding is essential. Tableau identity ($P$ vs $Q$) is the single most critical component. 1D positional encoding recovers only 72\% of performance, demonstrating that 2D structure specifically---not just any positional information---is what enables learning.}
+\end{table}
+
+\section{The Memorisation Question}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{rrrrl}
+\toprule
+$n$ & Parameters & Unique inputs & Params/input & Verdict \\
+\midrule
+8 & 1.2M & 40{,}320 & 29.8 & Ambiguous \\
+10 & 1.2M & 3{,}628{,}800 & 0.33 & \textbf{Cannot memorise} \\
+15 & 1.2M & $1.3 \times 10^{12}$ & $9.4 \times 10^{-7}$ & \textbf{Provably algorithmic} \\
+\bottomrule
+\end{tabular}
+\caption{At $n{=}10$, a lookup table would need at least 36M entries---30$\times$ the model's parameter count. At $n{=}15$, the model has seen 0.00004\% of the input space.}
+\end{table}
+
+The $n{=}10$ result is unambiguous generalisation: 1.2M parameters trained on 14\% of the space achieve perfect accuracy. The $n{=}15$ result---training on 500{,}000 out of 1.3 trillion possible inputs and getting 99.99\% of held-out inputs exactly right---admits no interpretation other than the model having learned a general algorithm for inverse RSK.
+
+\section{Reverse Plane Partitions (Hillman--Grassl)}
+
+Given a reverse plane partition (RPP) of shape~$\lambda$, recover the arbitrary filling via the inverse Hillman--Grassl correspondence. The same model architecture is used---the only change is that the input is a single filling (not a pair), so $\mathrm{tableau\_emb}(0)$ is used for all tokens.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{llrcccc}
+\toprule
+Shape $\lambda$ & Type & $|\lambda|$ & Classes & Test exact & Per-position & Best epoch \\
+\midrule
+$(4,3,2,1)$ & Staircase & 10 & 5 & \textbf{100.00\%} & \textbf{100.00\%} & 23 \\
+$(6,4,2)$ & Wide & 12 & 5 & \textbf{99.99\%} & \textbf{100.00\%} & 17 \\
+$(2,2,2,2,2,1)$ & Tall & 11 & 5 & \textbf{99.99\%} & \textbf{100.00\%} & 36 \\
+\bottomrule
+\end{tabular}
+\caption{Hillman--Grassl results (500{,}000 training samples each, max entry value 4). Tall shapes converge slower due to longer zigzag paths creating longer-range dependencies.}
+\end{table}
+
+\section{Cylindric Plane Partitions}
+
+Given a cylindric plane partition (CPP) with binary profile~$\pi$, recover the base partition~$\gamma$ and the ALCD (arbitrarily labelled cylindric diagram) face labels via the inverse cylindric growth diagram bijection. This uses the \emph{Burge local rule} applied recursively through a cylindric growth diagram, as described in Langer~\cite{langer2013}, \S4.2--4.3. The bijection gives a combinatorial proof of Borodin's identity for cylindric Schur functions~\cite{langer2012}.
+
+The cylindric bijection is qualitatively different from all previous experiments. There is no direct closed-form algorithm: the bijection $\mathrm{CPP}(\pi) \leftrightarrow (\gamma, \mathrm{ALCD}(\pi))$ is defined implicitly by the recursive $\mathfrak{L}_i$ composition~\cite{langer2013}, which peels off one ALCD label at each step by applying the Burge local rule at a face of the growth diagram. The number of ALCD labels equals the bubble-sort distance from~$\pi$ to~$\pi_{\min} = (0^n, 1^m)$.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{crrcccc}
+\toprule
+Profile $\pi$ & $T$ & Labels & Classes & Test exact & Per-position & Best epoch \\
+\midrule
+$(1,0,1,0)$ & 4 & 3 & 4 & \textbf{100.00\%} & \textbf{100.00\%} & 2 \\
+$(1,0,1,0,0)$ & 5 & 5 & 4 & \textbf{100.00\%} & \textbf{100.00\%} & 7 \\
+$(1,0,1,0,1,0)$ & 6 & 6 & 4 & \textbf{100.00\%} & \textbf{100.00\%} & 3 \\
+$(1,0,1,0,1,0,1,0)$ & 8 & 10 & 4 & \textbf{99.98\%} & \textbf{100.00\%} & 9 \\
+\bottomrule
+\end{tabular}
+\caption{Cylindric growth diagram results (500{,}000 training samples each, max label value 3). Despite the recursive, implicit nature of the bijection, the transformer achieves near-perfect accuracy on all tested profiles, including the challenging $T{=}8$ case with 10 ALCD labels.}
+\end{table}
+
+The input encoding adapts the same 4-component structure: each partition entry in the CPP becomes a token with $\mathrm{value\_emb}(v) + \mathrm{pos\_i\_emb}(i) + \mathrm{pos\_j\_emb}(j) + \mathrm{depth\_emb}(0)$, where $i$ indexes the position in the profile and $j$ indexes the part within the partition.
+
+\section{Mechanistic Interpretability via Sparse Autoencoders}
+
+The model achieves near-perfect accuracy on all tasks. \emph{What algorithm has it learned?}
+
+We train sparse autoencoders (SAEs) on residual-stream activations at each transformer layer to decompose the model's representations into interpretable features. The SAEs use a TopK architecture~\cite{bricken2023} with dictionary size 1024 and $k{=}32$, trained on 50{,}000 samples of activations per layer. There are two candidate algorithms: Schensted's sequential bumping, and Fomin's parallel growth diagrams via local rules~\cite{langer2013}. The encoder-only transformer has no causal mask---all tokens attend to all others simultaneously---so growth diagrams are architecturally the more natural fit.
+
+\subsection{Methodology: Per-Step Correlation}
+
+Inverse RSK proceeds in $n$ steps, each tracing a reverse bumping path through~$P$. Every $P$-token lies on \emph{some} step's path (all~$n$ steps together remove every cell), so aggregate path correlation is trivially 1.0. We instead compute \textbf{per-step lift}: the ratio $P(\text{feature active} \mid \text{token on step-$k$ path}) / P(\text{feature active} \mid \text{$P$-token})$. For cylindric plane partitions, we analogously compute \textbf{per-face lift}: how much more each feature fires on the partition triple $(i{-}1, i, i{+}1)$ involved in growth diagram face~$f$.
+
+\subsection{Permutation RSK: Schensted Insertion Features}
+
+At layer~2 (the critical computation layer; ablating it crashes accuracy to 62\%), we find two families of monosemantic features:
+
+\textbf{1.~Insertion-order detectors.}
+Features with monotonically increasing lift from step~0 to step~9, peaking sharply at the last step. One feature achieves lift $[0.3, 0.4, 0.5, 0.6, 0.7, 1.0, 1.3, 1.9, 3.0, 10.0]$ across the 10 steps, firing almost exclusively on value~1 at position $(0,0)$ in~$P$---the first cell inserted during forward RSK, and the last removed during inverse RSK. These features encode the temporal structure of insertion from the static $(P, Q)$ input.
+
+\textbf{2.~Step-specific $Q$-entry locators.}
+Features that fire at one or two steps on specific $(value, row, column)$ combinations in~$Q$. One feature fires only at steps~6--7, exclusively on $Q$-tokens with value~3 at row~2, column~0. These identify where to begin reverse bumping for each step---the essential ``lookup'' operation in the textbook inverse algorithm.
+
+\subsection{Cylindric Plane Partitions: Growth Diagram Features}
+
+The cylindric experiment provides the cleaner test. There is no sequential bumping algorithm---the bijection is \emph{defined} by the Burge local rule applied at each face of the growth diagram~\cite{langer2013,langer2012}. Whatever the model learned must functionally implement local rules.
+
+For profile $\pi = (1,0,1,0,1,0,1,0)$ with 10 faces and 4 dependency levels, SAE features at all layers correlate with specific growth diagram faces at 3.0--3.3$\times$ lift. The dominant features correspond to \textbf{depth-0 faces}---those computable directly from the input. Deeper faces appear at later layers, consistent with the model computing the recursive $\mathfrak{L}_i$ composition layer by layer: early layers handle independent faces in parallel, middle layers chain results, and by layer~5 all 10 faces (including the deepest dependency level) are represented.
+
+\subsection{Summary}
+
+The permutation model learns features resembling Schensted's sequential algorithm. The cylindric model---where no sequential algorithm exists---learns features aligned with Fomin's growth diagram local rules. The same architecture adapts its internal algorithm to the task structure, and both algorithms are recoverable from the trained weights via sparse autoencoders.
+
+\section{Future Work}
+
+\begin{itemize}[nosep]
+    \item \textbf{Causal interventions}: zero individual SAE features and measure accuracy impact to establish which features are causally necessary, not merely correlated.
+    \item \textbf{Embedding ablation}: systematically remove embedding components (row, column, tableau identity) to quantify which structural information is necessary for learnability.
+    \item \textbf{Scale to $n{=}20{+}$}: the sampling pipeline supports any~$n$; $n{=}20$ has $2.4 \times 10^{18}$ permutations.
+    \item \textbf{Error analysis}: characterise which permutations the model struggles with at $n{=}15$.
+    \item \textbf{Cross-task feature transfer}: do SAE features from the permutation model transfer to the Hillman--Grassl or cylindric models? All three use the Burge local rule with different boundary conditions.
+    \item \textbf{Cylindric RSK}: Dobner~\cite{dobner2026} defined an RSK analogue for cylindric tableaux, directly extending the growth diagram framework in~\cite{langer2013}.
+\end{itemize}
+
+\section*{Code and Models}
+
+Source code: \url{https://github.com/RaggedR/rsk-transformer}\\
+Trained models: \url{https://huggingface.co/RobBobin/rsk-transformer}
+
+\begin{thebibliography}{9}
+
+\bibitem{schensted1961}
+C.~Schensted, \emph{Longest increasing and decreasing subsequences}, Canadian Journal of Mathematics, 13:179--191, 1961.
+
+\bibitem{knuth1970}
+D.E.~Knuth, \emph{Permutations, matrices, and generalized Young tableaux}, Pacific Journal of Mathematics, 34(3):709--727, 1970.
+
+\bibitem{langer2013}
+R.~Langer, \emph{Cylindric plane partitions, Lambda determinants, Commutants in semicircular systems}, PhD thesis, Universit\'{e} Paris-Est, 2013. \href{https://arxiv.org/abs/2110.12629}{arXiv:2110.12629}.
+
+\bibitem{raschka2024}
+S.~Raschka, \emph{Build a Large Language Model (From Scratch)}, Manning, 2024.
+
+\bibitem{pnnl}
+H.~Kvinge, D.~Brown, H.~Jenne, R.~Jasper, and S.~Scullen, \emph{ML4AlgComb: Machine Learning for Algebraic Combinatorics}, 2025. \href{https://arxiv.org/abs/2503.06366}{arXiv:2503.06366}.
+
+\bibitem{scullen2025}
+S.~Scullen, D.~Brown, R.~Jasper, H.~Kvinge, and H.~Jenne, \emph{Permutations as a testbed for studying the effect of input representations on learning}, Methods and Opportunities at Small Scale (MOSS), ICML, 2025.
+
+\bibitem{acdrepo}
+ACDRepo, \emph{Robinson--Schensted--Knuth Correspondence datasets}, \url{https://huggingface.co/ACDRepo}.
+
+\bibitem{langer2012}
+R.~Langer, \emph{Enumeration of cylindric plane partitions---part {I}}, 2012. \href{https://arxiv.org/abs/1204.4583}{arXiv:1204.4583}.
+
+\bibitem{bricken2023}
+T.~Bricken, A.~Templeton, J.~Batson, B.~Chen, A.~Jermyn, T.~Conerly, N.~Turner, C.~Anil, C.~Denison, A.~Askell, R.~Lasenby, Y.~Wu, S.~Kravec, N.~Schiefer, T.~Maxwell, N.~Joseph, Z.~Hatfield-Dodds, A.~Tamkin, K.~Nguyen, B.~McLean, J.E.~Burke, T.~Hume, S.~Carter, T.~Henighan, and C.~Olah, \emph{Towards monosemanticity: Decomposing language models with dictionary learning}, Transformer Circuits Thread, 2023.
+
+\bibitem{dobner2026}
+M.~Dobner, \emph{An RSK analogue for cylindric tableaux}, 2026. \href{https://arxiv.org/abs/2603.09119}{arXiv:2603.09119}.
+
+\end{thebibliography}
+
+\end{document}

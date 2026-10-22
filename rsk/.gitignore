@@ -1,0 +1,14 @@
+checkpoints/
+__pycache__/
+*.pyc
+*.pdf
+*.aux
+*.log
+*.out
+CLAUDE.md
+LESSONS.md
+.DS_Store
+hf_upload.py
+mlp_n15.log
+run_mlp_after_encoder.sh
+sae/
