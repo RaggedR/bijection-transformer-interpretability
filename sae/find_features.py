@@ -15,7 +15,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-# sae.py expects config/model/data from paul/rsk/
+# sae.py expects config/model/data from rsk/
 rsk_dir = str(Path(__file__).resolve().parent.parent / "rsk")
 sae_dir = str(Path(__file__).resolve().parent)
 sys.path.insert(0, rsk_dir)
