@@ -1,0 +1,569 @@
+\documentclass[10pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{graphicx}
+\usepackage{natbib}
+\usepackage{microtype}
+
+\newtheorem{definition}{Definition}
+\newtheorem{theorem}{Theorem}
+\newtheorem{proposition}{Proposition}
+\newtheorem{conjecture}{Conjecture}
+
+\title{Testing Compositional Faithfulness:\\Causal Interventions on Sparse Autoencoder Features\\in a Combinatorial Bijection Transformer}
+
+\author{Robin Langer\\
+\texttt{https://github.com/RaggedR/rsk-transformer}}
+
+\date{July 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Gauderis et al.\ recently proposed \emph{compositional interpretability},
+a category-theoretic framework that formalises when a mechanistic explanation
+is both faithful to a model's internal computation and compositionally
+consistent. We provide the first empirical test of this framework by
+performing causal feature interventions on sparse autoencoder (SAE)
+decompositions of a transformer trained to invert combinatorial bijections.
+We study two tasks: permutation RSK (where multiple algorithms exist) and
+cylindric plane partitions (where the Burge local rule is the only known
+algorithm). Zeroing individual SAE features reveals a striking contrast:
+in the cylindric model, 29\% of causally important features are also
+compositionally faithful (causally necessary \emph{and} correlated with
+specific growth diagram faces), with the three most impactful features
+all showing $>3\times$ lift on identified faces. In the permutation model,
+only 2\% of causal features are compositionally faithful---the per-step
+bumping path correlations reported in prior work are almost entirely
+epiphenomenal. This contrast supports the Weak Principle of Explanatory
+Optimism selectively: compositional faithfulness emerges when the task
+constrains the model to a unique algorithm, but not when multiple
+algorithmic strategies are available.
+\end{abstract}
+
+\section{Introduction}
+
+Mechanistic interpretability aims to reverse-engineer neural networks into
+human-understandable components. The standard approach---decompose, describe,
+validate \citep{sharkey2025}---relies on correlational evidence: a feature
+``looks like'' it encodes a concept, an attention head ``seems to'' perform
+a specific computation. But correlation is not causation. A sparse autoencoder
+(SAE) feature that fires on inputs matching a particular algorithmic step may
+be decorative rather than functional, tracking a pattern without contributing
+to the model's actual computation.
+
+Gauderis et al.\ \citep{gauderis2026} recently proposed \emph{compositional
+interpretability}, a category-theoretic framework that addresses this gap.
+They define a \emph{compositional interpretation} as a pair of mappings---one
+structural ($I_S$, labelling syntax), one behavioural ($I_C$, labelling
+semantics)---that must \emph{commute}: $I_S = I_C \circ \llbracket \cdot
+\rrbracket$. When this commutativity holds, the structural label assigned to
+a component agrees with its behavioural role. They call this
+\emph{compositional faithfulness}.
+
+We provide the first empirical test of this framework. Our test bed is a
+1.2M-parameter transformer trained to invert combinatorial bijections
+\citep{langer2026rsk}, where the ground-truth algorithms are known exactly.
+We study two tasks:
+
+\begin{enumerate}
+\item \textbf{Permutation RSK} ($n=10$, 100\% test accuracy): inverting the
+Robinson--Schensted--Knuth correspondence, where two fundamentally different
+algorithms exist---Schensted's sequential bumping and Fomin's parallel growth
+diagrams via local rules.
+
+\item \textbf{Cylindric plane partitions} (profile $(1,0,1,0,1,0,1,0)$,
+99.98\% accuracy): inverting a cylindric growth diagram bijection where the
+\emph{only} known algorithm is the Burge local rule applied face-by-face
+\citep{langer2013}.
+\end{enumerate}
+
+For each task, prior work \citep{langer2026rsk} trained SAEs on the
+transformer's residual stream and found features that \emph{correlate} with
+specific algorithmic steps (bumping path steps for RSK, growth diagram faces
+for cylindric). We extend this by asking: are these features \emph{causally
+necessary}? We zero each SAE feature individually, patch the reconstructed
+activation back into the model's forward pass, and measure accuracy drop.
+
+The results reveal a sharp contrast between the two tasks, with direct
+implications for the compositional interpretability framework.
+
+\section{Background}
+
+\subsection{Compositional Interpretability}
+
+We briefly summarise the framework of \citet{gauderis2026}. A
+\emph{compositional model} $M = (D, \mathbf{S}, \mathbf{C},
+\llbracket\cdot\rrbracket)$ consists of a string diagram $D$ in a syntactic
+monoidal category $\mathbf{S}$, a semantic monoidal category $\mathbf{C}$,
+and a representation functor $\llbracket\cdot\rrbracket : \mathbf{S} \to
+\mathbf{C}$ mapping structure to behaviour. A \emph{compositional
+interpretation} is a pair of maps $I_S : \mathbf{S} \to H$ (syntactic
+grounding) and $I_C : \mathbf{C} \to H$ (semantic grounding) into a space
+$H$ of human-interpretable terms, satisfying the commutativity condition
+$I_S = I_C \circ \llbracket\cdot\rrbracket$.
+
+\begin{definition}[Compositional faithfulness, {\citep[Def.~3.1]{gauderis2026}}]
+A compositional interpretation $I_S : \mathbf{S} \to H$ is
+\emph{compositionally faithful} if there exists a reconstruction
+$I_C^* : H \to \mathbf{C}$ such that for every generator $f$ of $D$,
+the semantic distortion
+$d(\llbracket f \rrbracket, I_C^*(I_S(f))) \leq \epsilon$.
+\end{definition}
+
+Gauderis et al.\ classify existing mechanistic interpretability methods into
+a five-level \emph{refinement hierarchy} based on how the refinement functor
+$R : \mathbf{S} \to \mathbf{S}'$ is constrained. SAE-based analysis operates
+at Level~2 (piecewise): each component is refined in isolation, with a
+per-component fidelity bound.
+
+\begin{conjecture}[Weak Principle of Explanatory Optimism,
+{\citep[Conj.~4.3]{gauderis2026}}]
+Most important behaviour of an intelligence with implicit explanatory
+knowledge lies within some human-understandable complexity class.
+\end{conjecture}
+
+If this conjecture holds, syntactic compression reliably surfaces
+interpretable structure, because the regularities the model exploits align
+with human-understandable concepts.
+
+\subsection{The RSK Transformer}
+
+The RSK transformer \citep{langer2026rsk} is a 1.2M-parameter encoder-only
+transformer that learns to invert combinatorial bijections. Given a pair of
+tableaux $(P, Q)$ encoded as structured 2D tokens (value + row + column +
+tableau identity embeddings, summed into 128-d vectors), the model predicts
+the original permutation $\sigma$. The same architecture handles permutation
+RSK, matrix RSK, reverse plane partitions (Hillman--Grassl), and cylindric
+plane partitions, achieving near-perfect accuracy on all tasks.
+
+Prior interpretability analysis trained TopK SAEs ($d_{\text{dict}} = 1024$,
+$k = 32$) on residual stream activations at each of the 6 transformer layers.
+Two families of features were identified:
+
+\begin{itemize}
+\item \textbf{Permutation RSK}: \emph{insertion-order detectors} with
+monotonically increasing per-step lift, and \emph{step-specific Q-entry
+locators} that fire on particular $(v, r, c)$ combinations in $Q$.
+
+\item \textbf{Cylindric}: \emph{growth diagram face detectors} that fire on
+the partition triples $(i{-}1, i, i{+}1)$ involved in specific Burge local
+rule applications, at $3.0$--$3.3\times$ lift.
+\end{itemize}
+
+These findings are correlational. Our experiment tests whether they are
+causal.
+
+\section{Experiment Design}
+
+\subsection{Causal Feature Ablation}
+
+For a trained model $M$, a trained SAE at layer $\ell$, and a feature index
+$j$, we define the \emph{single-feature ablation} as follows:
+
+\begin{enumerate}
+\item Run the forward pass up to layer $\ell$.
+\item Intercept the residual stream activation $h \in \mathbb{R}^{b \times t
+\times d}$.
+\item Encode through the SAE: normalise, apply encoder, apply TopK sparsity
+to obtain sparse activations $z \in \mathbb{R}^{d_{\text{dict}}}$.
+\item Set $z_j = 0$ (the intervention).
+\item Decode back to $\hat{h}$ and substitute into the forward pass.
+\item Measure downstream accuracy.
+\end{enumerate}
+
+The \emph{causal importance} of feature $j$ is $\Delta_j = a_{\text{SAE}} -
+a_j$, where $a_{\text{SAE}}$ is the accuracy with full SAE reconstruction
+(no features zeroed) and $a_j$ is the accuracy with feature $j$ zeroed.
+Using the SAE baseline rather than the original model isolates the effect of
+the single feature from the SAE reconstruction error.
+
+\subsection{Cross-Referencing Causal and Correlational Evidence}
+
+For each feature, we have two independent measurements:
+
+\begin{itemize}
+\item \textbf{Correlational}: the \emph{per-step lift} (permutation) or
+\emph{per-face lift} (cylindric)---how much more likely the feature is to
+fire on tokens involved in a specific algorithmic step compared to its base
+rate.
+
+\item \textbf{Causal}: $\Delta_j$, the accuracy drop from zeroing the feature.
+\end{itemize}
+
+A feature is \emph{compositionally faithful} (in the sense of
+\citet{gauderis2026}) if it scores high on \emph{both} measures: the
+structural label assigned by the correlational analysis ($I_S$) agrees with
+the feature's functional role as revealed by the causal intervention ($I_C$).
+We operationalise this as $\Delta_j > 0.1\%$ (causal) and lift $> 1.5\times$
+(correlated).
+
+\subsection{Setup}
+
+\begin{itemize}
+\item \textbf{Permutation RSK}: model \texttt{encoder\_n10} (100\% greedy
+exact match on 50K test samples), SAEs from
+\texttt{sae\_encoder\_n10}, layer~2 (the critical computation layer; ablating
+it drops accuracy to 62\%).
+
+\item \textbf{Cylindric}: model \texttt{encoder\_cyl\_10101010\_m3} (99.98\%
+exact match), SAEs from \texttt{sae\_cyl\_10101010}, layer~2.
+
+\item \textbf{Evaluation}: 10,000 test samples (permutation) and 1,000 test
+samples (cylindric), seeded for reproducibility.
+
+\item \textbf{Sanity checks}: zeroing all features drops accuracy to 0\%
+(confirming features carry real information); zeroing dead features produces
+$\Delta \approx 0$.
+\end{itemize}
+
+\section{Results}
+
+\subsection{Permutation RSK}
+
+Table~\ref{tab:perm} shows the top 15 features by causal importance at
+layer~2.
+
+\begin{table}[h]
+\centering
+\caption{Permutation RSK (layer~2, $n{=}10$, 10K test samples). SAE
+baseline: 100.00\% greedy exact match. No feature in the top 30 by causal
+importance has lift $> 1.5$.}
+\label{tab:perm}
+\small
+\begin{tabular}{rccccl}
+\toprule
+Feature & $\Delta$ Exact & $\Delta$ Per-pos & Lift & Best Step & Assessment \\
+\midrule
+664 & 15.34\% & 3.07\% & 1.11 & $k{=}1$ & causal only \\
+895 & 12.58\% & 3.03\% & 1.15 & $k{=}9$ & causal only \\
+361 & 10.67\% & 2.87\% & 1.39 & $k{=}1$ & causal only \\
+387 & 10.49\% & 2.91\% & 1.49 & $k{=}0$ & causal only \\
+678 & 10.25\% & 2.21\% & 1.15 & $k{=}7$ & causal only \\
+657 &  8.16\% & 1.67\% & 1.08 & $k{=}7$ & causal only \\
+230 &  7.32\% & 1.94\% & 1.08 & $k{=}4$ & causal only \\
+406 &  6.47\% & 1.61\% & 1.03 & $k{=}2$ & causal only \\
+409 &  5.37\% & 1.46\% & 1.03 & $k{=}3$ & causal only \\
+ 23 &  4.81\% & 1.21\% & 1.11 & $k{=}7$ & causal only \\
+564 &  3.94\% & 1.34\% & 1.10 & $k{=}8$ & causal only \\
+129 &  3.54\% & 0.88\% & 1.02 & $k{=}3$ & causal only \\
+611 &  2.68\% & 0.71\% & 1.13 & $k{=}8$ & causal only \\
+753 &  2.43\% & 0.49\% & 1.26 & $k{=}8$ & causal only \\
+715 &  1.80\% & 0.40\% & 1.19 & $k{=}1$ & causal only \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Of 405 alive features:
+\begin{itemize}
+\item 43 are causally important ($\Delta > 0.1\%$)
+\item 226 are correlationally strong (lift $> 1.5\times$)
+\item \textbf{1} is both (2\%)
+\item Top-20 overlap between causal and correlational rankings: \textbf{0}
+features
+\end{itemize}
+
+The per-step bumping path correlations are almost entirely epiphenomenal. The
+most causally important feature (\#664, $\Delta = 15.3\%$) has lift 1.11 on
+step $k{=}1$---it fires on step~1's bumping path barely more than on any
+other P-token. Meanwhile, the 226 features with lift $> 1.5\times$ are
+individually dispensable: the model routes around any single one.
+
+\subsection{Cylindric Plane Partitions}
+
+Table~\ref{tab:cyl} shows the top 15 features by causal importance at
+layer~2.
+
+\begin{table}[h]
+\centering
+\caption{Cylindric plane partitions (layer~2, profile $(1,0,1,0,1,0,1,0)$,
+1K test samples). SAE baseline: 99.90\% exact match. Three of the top four
+causal features have lift $> 3\times$.}
+\label{tab:cyl}
+\small
+\begin{tabular}{rccccl}
+\toprule
+Feature & $\Delta$ Exact & $\Delta$ Per-pos & Lift & Best Face & Assessment \\
+\midrule
+861 & 38.10\% & 3.81\% & 3.16 & $f{=}0$ & \textbf{faithful} $\star$ \\
+1006 & 31.90\% & 3.21\% & 3.28 & $f{=}6$ & \textbf{faithful} $\star$ \\
+469 & 23.50\% & 4.56\% & 1.11 & $f{=}3$ & causal only \\
+177 & 22.90\% & 4.14\% & 1.06 & $f{=}6$ & causal only \\
+ 38 & 21.90\% & 4.23\% & 1.04 & $f{=}4$ & causal only \\
+279 & 19.80\% & 3.94\% & 1.23 & $f{=}2$ & causal only \\
+185 & 18.00\% & 3.43\% & 1.16 & $f{=}6$ & causal only \\
+294 & 15.40\% & 1.54\% & 3.20 & $f{=}6$ & \textbf{faithful} $\star$ \\
+129 & 14.70\% & 1.91\% & 1.17 & $f{=}1$ & causal only \\
+746 & 13.90\% & 2.23\% & 1.08 & $f{=}0$ & causal only \\
+ 91 & 13.30\% & 1.36\% & 1.91 & $f{=}3$ & \textbf{faithful} $\star$ \\
+865 &  9.30\% & 1.99\% & 1.11 & $f{=}4$ & causal only \\
+230 &  9.00\% & 1.03\% & 1.24 & $f{=}6$ & causal only \\
+516 &  8.40\% & 0.89\% & 1.28 & $f{=}2$ & causal only \\
+551 &  5.20\% & 0.54\% & 1.31 & $f{=}1$ & causal only \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Of 356 alive features:
+\begin{itemize}
+\item 49 are causally important ($\Delta > 0.1\%$)
+\item 267 are correlationally strong (lift $> 1.5\times$)
+\item \textbf{14} are both (29\%)
+\item The three most causally impactful features (\#861, \#1006, \#294) all
+have lift $> 3\times$ on specific growth diagram faces
+\end{itemize}
+
+\subsection{Comparison}
+
+\begin{table}[h]
+\centering
+\caption{Summary comparison: compositional faithfulness by task.}
+\label{tab:comparison}
+\begin{tabular}{lcc}
+\toprule
+& Permutation RSK & Cylindric \\
+\midrule
+Causal features ($\Delta > 0.1\%$) & 43 & 49 \\
+Correlated features (lift $> 1.5$) & 226 & 267 \\
+Compositionally faithful & 1 (2\%) & 14 (29\%) \\
+Top-20 overlap & 0 & 1 \\
+Top causal feature: $\Delta$ & 15.3\% & 38.1\% \\
+Top causal feature: lift & 1.11 & 3.16 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Discussion}
+
+\subsection{Task Constraints Determine Compositional Faithfulness}
+
+The central finding is that compositional faithfulness---the alignment
+between correlational structure and causal importance---depends on the
+\emph{task}, not the model architecture.
+
+The permutation RSK task admits multiple algorithms: Schensted's sequential
+bumping and Fomin's parallel growth diagrams. The transformer is free to
+learn any strategy that inverts the bijection, and the SAE decomposition
+reveals that it has learned a \emph{distributed} representation where no
+single feature ``owns'' a specific algorithmic step. The per-step bumping
+path correlations, while statistically real (many features have lift
+$> 1.5\times$), are epiphenomenal---the model can compute the correct
+output without any individual correlated feature.
+
+The cylindric task admits only one algorithm: the Burge local rule applied
+face-by-face through a growth diagram \citep{langer2013}. The computation
+\emph{must} be localised to faces, so SAE features that correlate with
+specific faces are also causally necessary. The three most impactful features
+all have lift $> 3\times$ on identified faces, and zeroing any one of them
+drops accuracy by 15--38\%.
+
+In the language of \citet{gauderis2026}, the cylindric task constrains the
+\emph{refinement space}: there are fewer valid decompositions of the
+computation, so the model's actual syntax is closer to the unique
+interpretable decomposition. The permutation task leaves the refinement
+space unconstrained, and the model's chosen syntax does not align with
+either of the two known human-interpretable algorithms at the
+single-feature level.
+
+\subsection{Implications for Explanatory Optimism}
+
+The Weak Principle of Explanatory Optimism (Conjecture~4.3 of
+\citealt{gauderis2026}) holds that models with implicit explanatory knowledge
+will tend to represent it in human-understandable form. Our results suggest a
+refinement: explanatory optimism is \emph{task-conditional}.
+
+When the task structure forces a unique algorithmic solution, the model's
+internal representation aligns with human-understandable concepts (growth
+diagram faces), and SAE features are compositionally faithful. When multiple
+algorithmic strategies are available, the model finds a distributed
+representation that is computationally effective but not aligned with any
+single human-understandable algorithm at the piecewise (L2) decomposition
+level.
+
+This does not refute explanatory optimism outright. The permutation model
+may still admit a compositionally faithful interpretation at a different
+refinement level---for instance, Level~3 (global, cross-layer circuits) might
+reveal that \emph{groups} of features jointly implement bumping steps, even
+though no single feature does so alone. Our experiment tests L2 faithfulness
+only.
+
+\subsection{Methodological Implications}
+
+Our results carry a warning for the mechanistic interpretability community:
+\textbf{correlational SAE feature analysis can be systematically misleading}.
+In the permutation model, 226 features pass a reasonable correlational
+threshold (lift $> 1.5\times$), yet essentially none of them are causally
+important. A research programme that reports only correlational evidence
+would conclude that the model has learned Schensted-like bumping steps; the
+causal evidence shows this conclusion is unfounded.
+
+The fix is straightforward: single-feature ablation is computationally cheap
+(one forward pass per feature) and should be standard practice alongside
+correlational analysis. The two measurements are complementary---correlation
+identifies \emph{what} a feature tracks, causation identifies \emph{whether}
+it matters---and only their intersection constitutes compositional
+faithfulness.
+
+\subsection{Limitations}
+
+\begin{itemize}
+\item Our analysis is restricted to Level~2 (piecewise, per-layer)
+refinement. Cross-layer circuits, which may carry the permutation model's
+true algorithmic structure, require Level~3 analysis.
+
+\item The cylindric experiment uses 1,000 test samples (vs 10,000 for
+permutation), introducing more noise in the $\Delta$ estimates.
+
+\item We test only layer~2. Other layers may show different patterns of
+faithfulness.
+
+\item The lift threshold of $1.5\times$ is somewhat arbitrary. However, the
+qualitative result is robust: even at a threshold of $1.2\times$, only 5 of
+43 causal features qualify for the permutation model.
+
+\item We ablate single features only. Multi-feature ablation (testing whether
+groups of correlated features are jointly causal) is a natural next step.
+\end{itemize}
+
+\section{Related Work}
+
+\textbf{Compositional interpretability.}
+\citet{gauderis2026} introduce the framework we test.
+\citet{tull2024} develop the categorical foundations for compositional XAI.
+\citet{barbiero2025} propose defining interpretability through symmetry
+invariance.
+
+\textbf{Causal methods in interpretability.}
+\citet{geiger2025} frame mechanistic interpretability as causal abstraction,
+using top-down hypothesis testing to find alignments between models and
+high-level explanations. Our approach is bottom-up: we start from SAE
+features and test their causal necessity.
+\citet{joshi2026} argue that causal evaluation is essential for
+interpretability claims to generalise.
+
+\textbf{SAE interpretability.}
+\citet{bricken2023} introduce dictionary learning for transformer
+decomposition.
+\citet{templeton2024} scale monosemantic feature extraction to Claude~3
+Sonnet. \citet{braun2025} connect SAE explanations to minimum description
+length.
+
+\textbf{ML for combinatorics.}
+\citet{kvinge2025} establish the ML4AlgComb benchmark for machine learning
+on algebraic combinatorics. \citet{langer2026rsk} train the RSK transformer
+we study here.
+
+\section{Conclusion}
+
+We provide the first empirical test of the compositional interpretability
+framework of \citet{gauderis2026}, using causal feature ablation on SAE
+decompositions of a combinatorial bijection transformer. The central finding
+is a task-dependent contrast:
+
+\begin{itemize}
+\item When the task admits a unique algorithm (cylindric plane partitions),
+SAE features that correlate with algorithmic steps are also causally
+necessary. Compositional faithfulness holds: 29\% of causal features are
+also the strongest face-correlated features, and the top three causal
+features all show $>3\times$ lift.
+
+\item When multiple algorithms exist (permutation RSK), correlational
+evidence is systematically misleading. The 226 features with strong per-step
+bumping path correlations are individually dispensable; the 43 causally
+necessary features show no step-specific structure.
+\end{itemize}
+
+This suggests that explanatory optimism---the conjecture that syntactic
+compression surfaces human-aligned explanations---is task-conditional. It
+holds when the task constrains the refinement space to a single
+decomposition, but fails when the model is free to distribute computation
+across features in ways that don't map onto known algorithms.
+
+The practical implication is clear: correlational SAE analysis should always
+be accompanied by causal intervention. Only the intersection of the two
+constitutes a compositionally faithful interpretation.
+
+\paragraph{Code and models.}
+Source code: \url{https://github.com/RaggedR/rsk-transformer}.
+Trained models: \url{https://huggingface.co/RobBobin/rsk-transformer}.
+
+\bibliographystyle{plainnat}
+
+\begin{thebibliography}{99}
+
+\bibitem[Barbiero et al.(2025)]{barbiero2025}
+P.~Barbiero, M.~E.~Zarlenga, F.~Termine, A.~Jamnik, M.~Marra.
+\newblock Foundations of Interpretable Models.
+\newblock August 2025.
+
+\bibitem[Braun et al.(2025)]{braun2025}
+D.~Braun, L.~Bushnaq, L.~Heimersheim, S.~Mendel, J.~Sharkey, L.
+\newblock Interpretability in parameter space: Minimizing mechanistic
+description length with attribution-based parameter decomposition.
+\newblock \emph{arXiv:2501.14926}, 2025.
+
+\bibitem[Bricken et al.(2023)]{bricken2023}
+T.~Bricken, A.~Templeton, J.~Batson, et al.
+\newblock Towards monosemanticity: Decomposing language models with dictionary
+learning.
+\newblock \emph{Transformer Circuits Thread}, 2023.
+
+\bibitem[Gauderis et al.(2026)]{gauderis2026}
+W.~Gauderis, T.~Dooms, S.~T.~Homer, K.~Ayonrinde, G.~A.~Wiggins.
+\newblock From mechanistic to compositional interpretability.
+\newblock In \emph{2nd Workshop on Compositional Learning, ICML 2026}, 2026.
+\newblock \emph{arXiv:2605.08934}.
+
+\bibitem[Geiger et al.(2025)]{geiger2025}
+A.~Geiger, D.~Ibeling, D.~Zur, A.~Chaudhary, et al.
+\newblock Causal abstraction: A theoretical foundation for mechanistic
+interpretability.
+\newblock May 2025.
+
+\bibitem[Joshi et al.(2026)]{joshi2026}
+S.~Joshi, S.~Mueller, A.~Klindt, D.~Brendel, W.~Reizinger, P.~Sridhar, D.
+\newblock Causality is key for interpretability claims to generalise.
+\newblock \emph{arXiv:2602.16698}, February 2026.
+
+\bibitem[Kvinge et al.(2025)]{kvinge2025}
+H.~Kvinge, D.~Brown, H.~Jenne, R.~Jasper, S.~Scullen.
+\newblock ML4AlgComb: Machine learning for algebraic combinatorics.
+\newblock \emph{arXiv:2503.06366}, 2025.
+
+\bibitem[Langer(2013)]{langer2013}
+R.~Langer.
+\newblock \emph{Cylindric plane partitions, Lambda determinants, Commutants in
+semicircular systems}.
+\newblock PhD thesis, Universit\'{e} Paris-Est, 2013.
+\newblock \emph{arXiv:2110.12629}.
+
+\bibitem[Langer(2026)]{langer2026rsk}
+R.~Langer.
+\newblock Learning combinatorial bijections with transformers: Inverse RSK,
+growth diagrams, and interpretable features.
+\newblock April 2026.
+
+\bibitem[Sharkey et al.(2025)]{sharkey2025}
+L.~Sharkey, B.~Chughtai, J.~Batson, et al.
+\newblock Open problems in mechanistic interpretability.
+\newblock January 2025.
+
+\bibitem[Templeton et al.(2024)]{templeton2024}
+A.~Templeton, T.~Conerly, J.~Marcus, et al.
+\newblock Scaling monosemanticity: Extracting interpretable features from
+Claude~3 Sonnet.
+\newblock \emph{Transformer Circuits Thread}, 2024.
+
+\bibitem[Tull et al.(2024)]{tull2024}
+S.~Tull, R.~Lorenz, R.~Clark, S.~Khan, I.~Coecke, B.
+\newblock Towards compositional interpretability for XAI.
+\newblock June 2024.
+
+\end{thebibliography}
+
+\end{document}

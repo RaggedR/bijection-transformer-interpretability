@@ -1,0 +1,13 @@
+*.pt
+*.pth
+*.ckpt
+checkpoints/
+activations/
+__pycache__/
+*.pyc
+data/
+*.log
+*.aux
+*.out
+*.synctex.gz
+.DS_Store
