@@ -13,5 +13,4 @@ actually represent.
 Model checkpoints and activation tensors (several GB) are **not** committed — they
 are regenerable from the training code.
 
-## Collaboration
-Joint research with **Paul**. *(Robin: add Paul's full name / affiliation here.)*
+*By Robin Langer.*
